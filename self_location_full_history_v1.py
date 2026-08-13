@@ -1,4 +1,4 @@
-"""Canevas — O1 full-history self-location test v1.1."""
+"""Canevas — O1 full-history self-location test v1.2."""
 import pandas as pd
 
 BIRTH_YEAR=1992
@@ -10,21 +10,53 @@ URL="https://ourworldindata.org/grapher/annual-number-of-births-by-world-region.
 
 def load_births():
     try:
-        df=pd.read_csv(URL,storage_options={'User-Agent':'Our World In Data data fetch/1.0'})
+        df=pd.read_csv(URL,storage_options={'User-Agent':'Mozilla/5.0'})
     except Exception as e:
         raise RuntimeError(f'Could not download OWID/UN births data: {e}')
-    df=df[df['Entity'].astype(str).str.lower().eq('world')].copy()
-    nums=[c for c in df.columns if c not in ('Entity','Code','Year')]
-    if not nums: raise RuntimeError(f'No births column found. Columns={list(df.columns)}')
-    col=nums[0]
-    out=df[['Year',col]].dropna().rename(columns={col:'births'})
-    out['Year']=out['Year'].astype(int); out['births']=out['births'].astype(float)
-    if 1950 not in set(out.Year) or BIRTH_YEAR not in set(out.Year):
-        raise RuntimeError('Required years missing from OWID data.')
-    return out
+
+    # OWID can return either the full grapher schema (Entity/Code/Year/value)
+    # or a world-only export (Year/value). Support both without guessing a row.
+    if 'Entity' in df.columns:
+        world=df[df['Entity'].astype(str).str.lower().eq('world')].copy()
+        if not world.empty:
+            df=world
+
+    if 'Year' not in df.columns:
+        raise RuntimeError(f'No Year column found. Columns={list(df.columns)}')
+
+    meta={'Entity','Code','Year'}
+    candidates=[]
+    for c in df.columns:
+        if c in meta:
+            continue
+        s=pd.to_numeric(df[c],errors='coerce')
+        if s.notna().sum()>=10:
+            candidates.append((c,s))
+    if not candidates:
+        raise RuntimeError(f'No numeric births column found. Columns={list(df.columns)}')
+
+    # Prefer a column whose name actually refers to births; otherwise use the
+    # only/first numeric data column from the grapher export.
+    chosen=None
+    for c,s in candidates:
+        if 'birth' in c.lower():
+            chosen=(c,s); break
+    if chosen is None:
+        chosen=candidates[0]
+    col,series=chosen
+
+    out=pd.DataFrame({'Year':pd.to_numeric(df['Year'],errors='coerce'),'births':series}).dropna()
+    out['Year']=out['Year'].astype(int)
+    out['births']=out['births'].astype(float)
+    out=out.groupby('Year',as_index=False)['births'].sum()
+
+    years=set(out.Year)
+    if 1950 not in years or BIRTH_YEAR not in years:
+        raise RuntimeError(f'Required years missing from OWID data. Range={out.Year.min()}..{out.Year.max()}, column={col}')
+    return out,col
 
 def main():
-    d=load_births(); d=d[(d.Year>=1950)&(d.Year<=2022)].copy()
+    d,col=load_births(); d=d[(d.Year>=1950)&(d.Year<=2022)].copy()
     births_before=d[d.Year<BIRTH_YEAR].births.sum()
     births_year=float(d.loc[d.Year==BIRTH_YEAR,'births'].iloc[0])
     rank_mid=PRB_EVER_1950+births_before+0.5*births_year
@@ -37,10 +69,10 @@ def main():
     span=2022-PRB_START_YEAR+1
     cal=(2*WINDOW+1)/span
     print('='*72)
-    print(' CANEVAS SELF-LOCATION O1 — FULL HOMO SAPIENS HISTORY v1.1')
+    print(' CANEVAS SELF-LOCATION O1 — FULL HOMO SAPIENS HISTORY v1.2')
     print('='*72)
     print(f'Observed birth year = {BIRTH_YEAR}')
-    print('Source = UN WPP 2024 via Our World in Data')
+    print(f'Source = UN WPP 2024 via Our World in Data; data column = {col}')
     print(f'PRB cumulative ever born by 1950 = {PRB_EVER_1950:,}')
     print(f'PRB cumulative ever born by 2022 = {PRB_EVER_2022:,}')
     print(f'UN/OWID births in {BIRTH_YEAR} = {births_year:,.0f}')
@@ -61,6 +93,6 @@ def main():
     print('- Prehistoric cumulative births are highly uncertain; PRB is an order-of-magnitude reconstruction.')
     print('- Technology remains a separate conditioning problem.')
     print('- No SSA/SIA/reference-class rule is derived here.')
-    print('\nFINISHED O1 FULL-HISTORY v1.1')
+    print('\nFINISHED O1 FULL-HISTORY v1.2')
 
 if __name__=='__main__': main()
