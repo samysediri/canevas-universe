@@ -1,25 +1,26 @@
-"""Canevas + CLASS v0.11.1 — dark-energy / measure test.
+"""Canevas + CLASS v0.11.2 — dark-energy / measure test.
 
 Scientific question
 -------------------
 The raw structure score S(Lambda) is expected to favor smaller positive vacuum
-energy. So this version separates physical selection S(Lambda) from the prior /
-measure P(Lambda), and it never forces CLASS through parameter regions that its
-solver rejects.
+energy. So v0.11 does NOT pretend that a non-zero Lambda should maximize S.
+Instead it separates:
+
+    physical selection S(Lambda)
+
+from
+
+    prior/measure P(Lambda)
+
+and computes an illustrative observer-conditioned distribution
+
+    posterior(Lambda) proportional to S(Lambda) * P(Lambda).
 
 Two priors are declared before looking at the result:
 - flat per unit positive vacuum density Lambda;
 - flat per logarithmic interval in Lambda.
 
-IMPORTANT v0.11.1 change
-------------------------
-On this Windows/classy build, sufficiently large Lambda values are rejected by
-CLASS and a still larger value can stall for a long time. Once three consecutive
-increasing Lambda values have already been rejected, the remaining higher-Lambda
-points are marked as skipped_beyond_rejection_frontier and are NOT sent to CLASS.
-This is a numerical-domain rule, not a physical claim.
-
-Any posterior summary is therefore conditional on the CLASS-valid sampled domain.
+This is an exploratory calculation. It is not evidence for Canevas by itself.
 """
 
 from pathlib import Path
@@ -28,7 +29,7 @@ import traceback
 import numpy as np
 from classy import Class
 
-VERSION = "0.11.1"
+VERSION = "0.11.2"
 OUTDIR = Path(__file__).resolve().parent / "results"
 OUTDIR.mkdir(exist_ok=True)
 
@@ -63,7 +64,6 @@ kgrid = np.logspace(-4, np.log10(50.0), 700)
 
 lambda_grid = np.unique(np.sort(np.append(np.logspace(-2, 2, 41), 1.0)))
 redshifts = np.array([10.0, 8.0, 6.0, 4.0, 3.0, 2.0, 1.0, 0.5, 0.0])
-MAX_CONSECUTIVE_REJECTIONS = 3
 
 
 def W_tophat(x):
@@ -166,14 +166,14 @@ def score_epoch(Pk,z,lambda_ratio):
 
 
 def normalize_density(x,dens):
-    norm = np.trapz(dens,x)
+    norm = np.trapezoid(dens,x)
     return dens/norm if norm>0 else dens*np.nan
 
 
 def cdf_at_one(x,dens):
     p = normalize_density(x,dens)
     mask = x<=1.0
-    return float(np.trapz(p[mask],x[mask]))
+    return float(np.trapezoid(p[mask],x[mask]))
 
 
 def weighted_quantile(x,dens,q):
@@ -190,40 +190,35 @@ def run():
     print(f" CANEVAS + CLASS v{VERSION} — DARK ENERGY / MEASURE TEST")
     print("="*72)
     print(f"Fixed observed zeta = {zeta_obs:.6f}")
-    print(f"Lambda scan: {len(lambda_grid)} requested physical-vacuum ratios")
-    print(f"Safety rule: stop after {MAX_CONSECUTIVE_REJECTIONS} consecutive CLASS rejections.")
+    print(f"Lambda scan: {len(lambda_grid)} physical-vacuum ratios")
     print("No prior will be selected after seeing the result.\n")
 
     epoch_rows=[]
     selection=[]
     total=len(lambda_grid)
-    consecutive_rejections = 0
-    frontier_reached = False
+    consecutive_rejections=0
+    rejection_frontier=False
 
     for i,lr in enumerate(lambda_grid,1):
-        if frontier_reached:
+        if rejection_frontier:
             print(f"[{i:2d}/{total}] Lambda/Lambda_obs={lr:.5g} ... SKIPPED BEYOND REJECTION FRONTIER")
             selection.append((lr,np.nan))
-            epoch_rows.append({
-                "lambda_ratio":lr,"z":"","h":"","score":"",
-                "status":"skipped_beyond_rejection_frontier",
-                "error":f"Skipped after {MAX_CONSECUTIVE_REJECTIONS} consecutive CLASS rejections at lower Lambda."
-            })
+            epoch_rows.append({"lambda_ratio":lr,"z":"","h":"","score":"","status":"skipped_beyond_rejection_frontier","error":"higher Lambda skipped after three consecutive CLASS rejections"})
             continue
 
         print(f"[{i:2d}/{total}] CLASS Lambda/Lambda_obs={lr:.5g}",end=" ... ",flush=True)
         spectra,h,error=class_cosmology(float(lr))
         if spectra is None:
             consecutive_rejections += 1
-            print(f"REJECTED ({consecutive_rejections}/{MAX_CONSECUTIVE_REJECTIONS})")
+            print(f"REJECTED ({consecutive_rejections}/3)")
             selection.append((lr,np.nan))
             epoch_rows.append({"lambda_ratio":lr,"z":"","h":h,"score":"","status":"class_rejected","error":error})
-            if consecutive_rejections >= MAX_CONSECUTIVE_REJECTIONS:
-                frontier_reached = True
-                print("    >>> Rejection frontier reached. Higher Lambda values will be skipped, not forced.")
+            if consecutive_rejections >= 3:
+                rejection_frontier=True
+                print(">>> Rejection frontier reached. Higher Lambda values will be skipped, not forced.")
             continue
 
-        consecutive_rejections = 0
+        consecutive_rejections=0
         print("OK")
         scores=[]
         for z in redshifts:
@@ -237,8 +232,6 @@ def run():
         w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(epoch_rows)
 
     valid=np.array([(x,s) for x,s in selection if np.isfinite(s)],float)
-    if len(valid) < 3:
-        raise RuntimeError("Too few CLASS-valid Lambda points for a meaningful summary.")
     x=valid[:,0]; S=valid[:,1]
     order=np.argsort(x); x=x[order]; S=S[order]
     Srel=S/np.max(S)
@@ -259,8 +252,6 @@ def run():
         "log_prior_median_lambda":weighted_quantile(x,post_log,0.5),
         "log_prior_16":weighted_quantile(x,post_log,0.16),
         "log_prior_84":weighted_quantile(x,post_log,0.84),
-        "valid_lambda_min":float(x.min()),
-        "valid_lambda_max":float(x.max()),
     }
 
     with (OUTDIR/"v011_lambda_selection.csv").open("w",newline="",encoding="utf-8") as f:
@@ -273,33 +264,33 @@ def run():
         f"CANEVAS + CLASS v{VERSION} — DARK ENERGY / MEASURE SUMMARY",
         "="*64,
         f"Fixed zeta = {zeta_obs:.6f}",
-        f"CLASS-valid Lambda domain used for statistics = [{stats['valid_lambda_min']:.6f}, {stats['valid_lambda_max']:.6f}] x Lambda_obs",
-        "IMPORTANT: posterior statistics below are CONDITIONAL on this CLASS-valid sampled domain.",
+        f"Valid Lambda domain in this CLASS build: {x.min():.6f} to {x.max():.6f} times observed",
+        "All probability summaries below are CONDITIONAL on this numerically valid domain.",
         "",
         "PHYSICS ONLY S(Lambda):",
         f"raw score peak Lambda/Lambda_obs = {stats['raw_score_peak_lambda']:.6f}",
         f"score at observed Lambda / peak = {stats['raw_score_at_observed_over_peak']:.6f}",
         "",
-        "FLAT PRIOR PER UNIT POSITIVE LAMBDA (conditional on valid domain):",
+        "FLAT PRIOR PER UNIT POSITIVE LAMBDA:",
         f"CDF at observed Lambda = {stats['flat_prior_CDF_at_observed']:.6f}",
         f"median = {stats['flat_prior_median_lambda']:.6f}",
         f"16-84% = [{stats['flat_prior_16']:.6f}, {stats['flat_prior_84']:.6f}]",
         "",
-        "LOG-FLAT PRIOR (conditional on valid domain):",
+        "LOG-FLAT PRIOR:",
         f"CDF at observed Lambda = {stats['log_prior_CDF_at_observed']:.6f}",
         f"median = {stats['log_prior_median_lambda']:.6f}",
         f"16-84% = [{stats['log_prior_16']:.6f}, {stats['log_prior_84']:.6f}]",
         "",
         "PRE-DECLARED INTERPRETATION:",
         "- If physics alone peaks at the lower scan boundary, non-zero Lambda is NOT explained by optimization.",
-        "- If typicality changes strongly with the prior, the Canevas measure P(U) is essential.",
+        "- If observer-conditioned typicality changes strongly with the prior, the Canevas measure P(U) is essential.",
         "- No prior is promoted to correct because it matches observation.",
-        "- CLASS rejection/skipping boundaries are numerical, not physical selection boundaries.",
+        "- CLASS rejection frontier is a numerical-domain limitation, not a physical boundary.",
     ]
     (OUTDIR/"v011_lambda_measure_summary.txt").write_text("\n".join(lines),encoding="utf-8")
 
     print("\n"+"\n".join(lines))
-    print("\nFINISHED v0.11.1")
+    print("\nFINISHED v0.11.2")
 
 
 if __name__=="__main__":
