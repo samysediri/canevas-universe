@@ -1,0 +1,21 @@
+CANEVAS + CLASS v0.10 — ROBUSTNESS SUMMARY
+========================================================
+Observed zeta = 5.389452
+Total model variants = 270
+
+z=10.0: peak median=9.9180; 16-84%=[8.4164,11.6916]; obs/max median=0.7399
+z= 8.0: peak median=7.9015; 16-84%=[6.7973,9.1994]; obs/max median=0.8972
+z= 6.0: peak median=6.0682; 16-84%=[5.2843,6.9544]; obs/max median=0.9907
+z= 4.0: peak median=4.3437; 16-84%=[3.8379,4.9053]; obs/max median=0.9714
+z= 2.0: peak median=3.0000; 16-84%=[3.0000,3.0000]; obs/max median=0.7639
+
+ALL VARIANTS peak median = 6.0682
+ALL VARIANTS peak 5-95% = [3.0000, 10.7236]
+Fraction of variants with 3 <= peak_zeta <= 10 = 0.8889
+Fraction with observed_over_peak >= 0.90 = 0.5185
+Fraction with observed_over_peak >= 0.75 = 0.8037
+
+Interpretation rule (pre-declared):
+- robust-interesting if most variants keep peak zeta in the same order of magnitude;
+- weak/non-robust if reasonable variants scatter the peak across the scan range;
+- never interpret proximity alone as proof of Canevas.
