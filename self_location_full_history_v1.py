@@ -1,4 +1,4 @@
-"""Canevas — O1 full-history self-location test v1.2."""
+"""Canevas — O1 full-history self-location test v1.3."""
 import pandas as pd
 
 BIRTH_YEAR=1992
@@ -14,17 +14,21 @@ def load_births():
     except Exception as e:
         raise RuntimeError(f'Could not download OWID/UN births data: {e}')
 
-    # OWID can return either the full grapher schema (Entity/Code/Year/value)
-    # or a world-only export (Year/value). Support both without guessing a row.
-    if 'Entity' in df.columns:
-        world=df[df['Entity'].astype(str).str.lower().eq('world')].copy()
+    # Normalize schema names because OWID exports may use Entity/Year or entity/year.
+    lower={str(c).lower():c for c in df.columns}
+    entity_col=lower.get('entity')
+    year_col=lower.get('year')
+    code_col=lower.get('code')
+
+    if entity_col is not None:
+        world=df[df[entity_col].astype(str).str.lower().eq('world')].copy()
         if not world.empty:
             df=world
 
-    if 'Year' not in df.columns:
-        raise RuntimeError(f'No Year column found. Columns={list(df.columns)}')
+    if year_col is None:
+        raise RuntimeError(f'No year column found. Columns={list(df.columns)}')
 
-    meta={'Entity','Code','Year'}
+    meta={c for c in (entity_col,code_col,year_col) if c is not None}
     candidates=[]
     for c in df.columns:
         if c in meta:
@@ -35,17 +39,15 @@ def load_births():
     if not candidates:
         raise RuntimeError(f'No numeric births column found. Columns={list(df.columns)}')
 
-    # Prefer a column whose name actually refers to births; otherwise use the
-    # only/first numeric data column from the grapher export.
     chosen=None
     for c,s in candidates:
-        if 'birth' in c.lower():
+        if 'birth' in str(c).lower():
             chosen=(c,s); break
     if chosen is None:
         chosen=candidates[0]
     col,series=chosen
 
-    out=pd.DataFrame({'Year':pd.to_numeric(df['Year'],errors='coerce'),'births':series}).dropna()
+    out=pd.DataFrame({'Year':pd.to_numeric(df[year_col],errors='coerce'),'births':series}).dropna()
     out['Year']=out['Year'].astype(int)
     out['births']=out['births'].astype(float)
     out=out.groupby('Year',as_index=False)['births'].sum()
@@ -69,7 +71,7 @@ def main():
     span=2022-PRB_START_YEAR+1
     cal=(2*WINDOW+1)/span
     print('='*72)
-    print(' CANEVAS SELF-LOCATION O1 — FULL HOMO SAPIENS HISTORY v1.2')
+    print(' CANEVAS SELF-LOCATION O1 — FULL HOMO SAPIENS HISTORY v1.3')
     print('='*72)
     print(f'Observed birth year = {BIRTH_YEAR}')
     print(f'Source = UN WPP 2024 via Our World in Data; data column = {col}')
@@ -93,6 +95,6 @@ def main():
     print('- Prehistoric cumulative births are highly uncertain; PRB is an order-of-magnitude reconstruction.')
     print('- Technology remains a separate conditioning problem.')
     print('- No SSA/SIA/reference-class rule is derived here.')
-    print('\nFINISHED O1 FULL-HISTORY v1.2')
+    print('\nFINISHED O1 FULL-HISTORY v1.3')
 
 if __name__=='__main__': main()
