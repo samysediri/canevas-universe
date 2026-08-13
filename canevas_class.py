@@ -1,21 +1,26 @@
-"""Canevas + CLASS v0.10
+"""Canevas + CLASS v0.11 — dark-energy / measure test.
 
-Sensitivity / falsification scan around the observed dark-matter-to-baryon ratio.
+Scientific question
+-------------------
+The raw structure score S(Lambda) is expected to favor smaller positive vacuum
+energy. So v0.11 does NOT pretend that a non-zero Lambda should maximize S.
+Instead it separates:
 
-Scientific intent
------------------
-Do NOT optimize the model toward zeta_obs. Instead:
-1. use CLASS for P(k,z) on a fine zeta grid;
-2. reuse each CLASS spectrum to test reasonable post-processing variants;
-3. ask whether the preferred zeta remains in the same broad region.
+    physical selection S(Lambda)
 
-Variants tested without extra CLASS calls:
-- primordial amplitude scale A_s x {0.8, 1.0, 1.2};
-- halo mass function: Sheth-Tormen vs Press-Schechter;
-- cooling strength x {0.5, 1.0, 2.0};
-- atomic cooling threshold T_min x {8000, 10000, 15000 K}.
+from
 
-This remains an exploratory semi-analytic calculation, not a proof of Canevas.
+    prior/measure P(Lambda)
+
+and computes an illustrative observer-conditioned distribution
+
+    posterior(Lambda) proportional to S(Lambda) * P(Lambda).
+
+Two priors are declared before looking at the result:
+- flat per unit positive vacuum density Lambda;
+- flat per logarithmic interval in Lambda.
+
+This is an exploratory calculation. It is not evidence for Canevas by itself.
 """
 
 from pathlib import Path
@@ -24,327 +29,256 @@ import traceback
 import numpy as np
 from classy import Class
 
-VERSION = "0.10"
+VERSION = "0.11"
 OUTDIR = Path(__file__).resolve().parent / "results"
 OUTDIR.mkdir(exist_ok=True)
 
-# -------------------------
-# Frozen reference cosmology
-# -------------------------
-h = 0.674
-H0 = 100.0 * h
-Omega_m = 0.315
-omega_m = Omega_m * h * h
-Omega_b_obs = 0.0493
-zeta_obs = (Omega_m - Omega_b_obs) / Omega_b_obs
+h_ref = 0.674
+Omega_m_ref = 0.315
+Omega_b_ref = 0.0493
+omega_m = Omega_m_ref * h_ref**2
+omega_b = Omega_b_ref * h_ref**2
+omega_cdm = omega_m - omega_b
+Omega_L_ref = 1.0 - Omega_m_ref
+omega_L_ref = Omega_L_ref * h_ref**2
 A_s = 2.10e-9
 n_s = 0.965
 YHe = 0.245
+zeta_obs = omega_cdm / omega_b
 
 delta_c = 1.686
 
-# cgs constants
 G = 6.67430e-8
 kB = 1.380649e-16
 mp = 1.6726219e-24
 Msun = 1.98847e33
 Mpc = 3.0856776e24
 mu = 0.59
-H0_cgs = H0 * 1e5 / Mpc
 
-# CLASS is known to be stable on this installation in roughly this region.
-# Fine scan deliberately brackets zeta_obs without touching previously rejected extremes.
-zeta_grid = np.unique(np.sort(np.append(np.logspace(np.log10(3.0), np.log10(20.0), 37), zeta_obs)))
-redshifts = [10.0, 8.0, 6.0, 4.0, 2.0]
-k_class = np.logspace(-4, np.log10(50.0), 650)  # 1/Mpc
-
-# Halo masses in Msun/h
-Mgrid = np.logspace(7, 14.5, 300)
+rho_m_phys = omega_m * 2.775e11
+Mgrid = np.logspace(7, 15, 320)
 lnM = np.log(Mgrid)
 dlnM = np.gradient(lnM)
-rho_m_hunits = Omega_m * 2.775e11
+Rgrid = (Mgrid / ((4*np.pi/3)*rho_m_phys))**(1/3)
+kgrid = np.logspace(-4, np.log10(50.0), 700)
 
-# Sensitivity variants (pre-declared)
-AS_SCALES = [0.8, 1.0, 1.2]
-HMF_MODELS = ["ST", "PS"]
-COOLING_SCALES = [0.5, 1.0, 2.0]
-T_MINS = [8000.0, 10000.0, 15000.0]
-
-
-def R_from_M(M):
-    return (M / ((4 * np.pi / 3) * rho_m_hunits)) ** (1 / 3)
-
-
-Rgrid = R_from_M(Mgrid)
+lambda_grid = np.unique(np.sort(np.append(np.logspace(-2, 2, 41), 1.0)))
+redshifts = np.array([10.0, 8.0, 6.0, 4.0, 3.0, 2.0, 1.0, 0.5, 0.0])
 
 
 def W_tophat(x):
     x = np.asarray(x)
     out = np.ones_like(x)
-    mask = np.abs(x) > 1e-5
-    y = x[mask]
-    out[mask] = 3 * (np.sin(y) - y * np.cos(y)) / y**3
-    out[~mask] = 1 - x[~mask] ** 2 / 10
+    m = np.abs(x) > 1e-5
+    y = x[m]
+    out[m] = 3*(np.sin(y)-y*np.cos(y))/y**3
+    out[~m] = 1-x[~m]**2/10
     return out
 
 
-def sigma_M(k_h, P_h, Rvals):
-    lnk = np.log(k_h)
+def sigma_M(Pk):
+    lnk = np.log(kgrid)
     dlnk = np.gradient(lnk)
-    base = k_h**3 * P_h / (2 * np.pi**2) * dlnk
-    X = Rvals[:, None] * k_h[None, :]
-    s2 = (W_tophat(X) ** 2) @ base
-    return np.sqrt(np.maximum(s2, 0))
+    base = kgrid**3 * Pk/(2*np.pi**2) * dlnk
+    X = Rgrid[:,None]*kgrid[None,:]
+    return np.sqrt(np.maximum((W_tophat(X)**2) @ base, 0))
 
 
 def hmf_sheth_tormen(sig):
     A0, aa, p = 0.3222, 0.707, 0.3
-    s = np.maximum(sig, 1e-30)
-    nu = delta_c / s
-    f = A0 * np.sqrt(2 * aa / np.pi) * nu * (1 + (1 / (aa * nu**2)) ** p) * np.exp(-aa * nu**2 / 2)
-    deriv = np.gradient(np.log(1 / s), lnM)
-    return np.maximum(rho_m_hunits / Mgrid * f * deriv, 0)
+    s = np.maximum(sig,1e-30)
+    nu = delta_c/s
+    f = A0*np.sqrt(2*aa/np.pi)*nu*(1+(1/(aa*nu**2))**p)*np.exp(-aa*nu**2/2)
+    deriv = np.gradient(np.log(1/s), lnM)
+    return np.maximum(rho_m_phys/Mgrid*f*deriv, 0)
 
 
-def hmf_press_schechter(sig):
-    s = np.maximum(sig, 1e-30)
-    nu = delta_c / s
-    f = np.sqrt(2 / np.pi) * nu * np.exp(-0.5 * nu**2)
-    deriv = np.gradient(np.log(1 / s), lnM)
-    return np.maximum(rho_m_hunits / Mgrid * f * deriv, 0)
+def cooling_function(T):
+    safeT = np.maximum(np.asarray(T),1)
+    line = 1.2e-22*np.exp(-((np.log10(safeT)-5.25)/0.75)**2)
+    gate = 1/(1+np.exp(-(np.log10(safeT)-4.0)*20))
+    brem = 1.4e-27*np.sqrt(safeT)
+    return gate*line+brem
 
 
-def halo_mass_function(sig, model):
-    return hmf_sheth_tormen(sig) if model == "ST" else hmf_press_schechter(sig)
+def background_hubble_cgs(z, lambda_ratio):
+    omega_L = omega_L_ref*lambda_ratio
+    H_km_s_Mpc = 100.0*np.sqrt(omega_m*(1+z)**3 + omega_L)
+    return H_km_s_Mpc*1e5/Mpc
 
 
-def Ez(z):
-    return np.sqrt(Omega_m * (1 + z) ** 3 + (1 - Omega_m))
+def rho_crit_cgs(z, lambda_ratio):
+    H = background_hubble_cgs(z,lambda_ratio)
+    return 3*H**2/(8*np.pi*G)
 
 
-def rho_crit_cgs(z):
-    H = H0_cgs * Ez(z)
-    return 3 * H**2 / (8 * np.pi * G)
+def cooling_efficiency(z, lambda_ratio):
+    fb = omega_b/omega_m
+    Mcgs = Mgrid*Msun
+    rh = 200*rho_crit_cgs(z,lambda_ratio)
+    Rv = (3*Mcgs/(4*np.pi*rh))**(1/3)
+    V = np.sqrt(G*Mcgs/Rv)
+    T = mu*mp*V**2/(2*kB)
+    tdyn = Rv/V
+    n = fb*rh/(mu*mp)
+    tcool = 1.5*kB*T/(np.maximum(n,1e-100)*np.maximum(cooling_function(T),1e-100))
+    eff = 1/(1+tcool/tdyn)
+    return np.where(T>=1e4,eff,0.0)
 
 
-def cooling_function(T, strength=1.0):
-    T = np.asarray(T)
-    safeT = np.maximum(T, 1)
-    line = 1.2e-22 * np.exp(-((np.log10(safeT) - 5.25) / 0.75) ** 2)
-    gate = 1 / (1 + np.exp(-(np.log10(safeT) - 4.0) * 20))
-    brem = 1.4e-27 * np.sqrt(safeT)
-    return strength * (gate * line + brem)
-
-
-def cooling_efficiency(M_h, z, fb, strength=1.0, T_min=1e4):
-    Mcgs = (M_h / h) * Msun
-    rh = 200 * rho_crit_cgs(z)
-    Rv = (3 * Mcgs / (4 * np.pi * rh)) ** (1 / 3)
-    V = np.sqrt(G * Mcgs / Rv)
-    T = mu * mp * V**2 / (2 * kB)
-    tdyn = Rv / V
-    rhohot = fb * rh
-    n = rhohot / (mu * mp)
-    tcool = 1.5 * kB * T / (np.maximum(n, 1e-100) * np.maximum(cooling_function(T, strength), 1e-100))
-    eff = 1 / (1 + tcool / tdyn)
-    return np.where(T >= T_min, eff, 0.0)
-
-
-def class_spectrum(zeta, z):
-    omega_b = omega_m / (1 + zeta)
-    omega_cdm = omega_m - omega_b
+def class_cosmology(lambda_ratio):
+    omega_L = omega_L_ref*lambda_ratio
+    h = float(np.sqrt(omega_m + omega_L))
     params = {
-        "output": "mPk",
-        "h": h,
-        "omega_b": omega_b,
-        "omega_cdm": omega_cdm,
-        "A_s": A_s,
-        "n_s": n_s,
-        "YHe": YHe,
-        "P_k_max_1/Mpc": 50.0,
-        "z_max_pk": max(redshifts) + 0.5,
+        "output":"mPk",
+        "h":h,
+        "omega_b":omega_b,
+        "omega_cdm":omega_cdm,
+        "A_s":A_s,
+        "n_s":n_s,
+        "YHe":YHe,
+        "P_k_max_1/Mpc":50.0,
+        "z_max_pk":float(redshifts.max()+0.5),
     }
     cosmo = Class()
     try:
         cosmo.set(params)
         cosmo.compute()
-        P_Mpc3 = np.array([cosmo.pk(float(ki), float(z)) for ki in k_class])
-        k_h = k_class / h
-        P_h = P_Mpc3 * h**3
-        try:
-            s8 = float(cosmo.sigma8())
-        except Exception:
-            s8 = float("nan")
-        return k_h, P_h, s8, omega_b, omega_cdm
+        spectra = {}
+        for z in redshifts:
+            spectra[float(z)] = np.array([cosmo.pk(float(k),float(z)) for k in kgrid])
+        return spectra, h, None
+    except Exception as exc:
+        return None, h, f"{type(exc).__name__}: {exc}".replace("\n"," ")
     finally:
         try:
-            cosmo.struct_cleanup()
-            cosmo.empty()
+            cosmo.struct_cleanup(); cosmo.empty()
         except Exception:
             pass
 
 
-def safe_class_spectrum(zeta, z):
-    try:
-        return class_spectrum(zeta, z), None
-    except Exception as exc:
-        return None, f"{type(exc).__name__}: {exc}".replace("\n", " ")
+def score_epoch(Pk,z,lambda_ratio):
+    sig = sigma_M(Pk)
+    hmf = hmf_sheth_tormen(sig)
+    eff = cooling_efficiency(z,lambda_ratio)
+    fb = omega_b/omega_m
+    return fb*np.sum(Mgrid*hmf*eff*dlnM)/rho_m_phys
 
 
-def score_variant(sig_base, zeta, z, as_scale, hmf_model, cooling_scale, T_min):
-    # Linear P(k) is proportional to A_s, hence sigma scales as sqrt(A_s).
-    sig = sig_base * np.sqrt(as_scale)
-    hmf = halo_mass_function(sig, hmf_model)
-    fb = 1 / (1 + zeta)
-    eff = cooling_efficiency(Mgrid, z, fb, cooling_scale, T_min)
-    return fb * np.sum(Mgrid * hmf * eff * dlnM) / rho_m_hunits
+def normalize_density(x,dens):
+    norm = np.trapz(dens,x)
+    return dens/norm if norm>0 else dens*np.nan
 
 
-def interpolate_peak(zs, scores):
-    """Quadratic interpolation in log-zeta around the best grid point when possible."""
-    zs = np.asarray(zs, float)
-    scores = np.asarray(scores, float)
-    i = int(np.argmax(scores))
-    if i == 0 or i == len(zs) - 1:
-        return float(zs[i]), float(scores[i])
-    x = np.log(zs[i-1:i+2])
-    y = scores[i-1:i+2]
-    try:
-        c2, c1, c0 = np.polyfit(x, y, 2)
-        if c2 >= 0:
-            return float(zs[i]), float(scores[i])
-        xp = -c1/(2*c2)
-        zp = float(np.exp(xp))
-        if not (zs[i-1] <= zp <= zs[i+1]):
-            return float(zs[i]), float(scores[i])
-        yp = float(np.polyval([c2, c1, c0], xp))
-        return zp, yp
-    except Exception:
-        return float(zs[i]), float(scores[i])
+def cdf_at_one(x,dens):
+    p = normalize_density(x,dens)
+    mask = x<=1.0
+    return float(np.trapz(p[mask],x[mask]))
+
+
+def weighted_quantile(x,dens,q):
+    p = normalize_density(x,dens)
+    dx = np.diff(x)
+    area = 0.5*(p[:-1]+p[1:])*dx
+    c = np.concatenate([[0.0],np.cumsum(area)])
+    c /= c[-1]
+    return float(np.interp(q,c,x))
 
 
 def run():
-    print("=" * 72)
-    print(f" CANEVAS + CLASS v{VERSION} — SENSITIVITY / FALSIFICATION")
-    print("=" * 72)
-    print(f"Observed zeta = {zeta_obs:.6f}")
-    print(f"Fine grid: {len(zeta_grid)} zeta values x {len(redshifts)} epochs")
-    print(f"Post-CLASS variants per spectrum: {len(AS_SCALES)*len(HMF_MODELS)*len(COOLING_SCALES)*len(T_MINS)}")
-    print()
+    print("="*72)
+    print(f" CANEVAS + CLASS v{VERSION} — DARK ENERGY / MEASURE TEST")
+    print("="*72)
+    print(f"Fixed observed zeta = {zeta_obs:.6f}")
+    print(f"Lambda scan: {len(lambda_grid)} physical-vacuum ratios")
+    print("No prior will be selected after seeing the result.\n")
 
-    raw_rows = []
-    # cache[(z,zeta)] = (sigma_base, sigma8, omega_b, omega_cdm)
-    cache = {}
-    counter = 0
-    total = len(zeta_grid) * len(redshifts)
+    epoch_rows=[]
+    selection=[]
+    total=len(lambda_grid)
 
-    for z in redshifts:
-        for zeta in zeta_grid:
-            counter += 1
-            print(f"[{counter:3d}/{total}] CLASS z={z:g}, zeta={zeta:.6f}", end=" ... ", flush=True)
-            result, error = safe_class_spectrum(float(zeta), float(z))
-            if result is None:
-                print("REJECTED")
-                raw_rows.append({"z":z, "zeta":float(zeta), "status":"class_rejected", "sigma8_z0_CLASS":"", "error":error})
-                continue
-            k_h, P_h, s8, ob, oc = result
-            sig_base = sigma_M(k_h, P_h, Rgrid)
-            cache[(float(z), float(zeta))] = (sig_base, s8, ob, oc)
-            print("OK")
-            raw_rows.append({"z":z, "zeta":float(zeta), "status":"ok", "sigma8_z0_CLASS":s8, "error":""})
+    for i,lr in enumerate(lambda_grid,1):
+        print(f"[{i:2d}/{total}] CLASS Lambda/Lambda_obs={lr:.5g}",end=" ... ",flush=True)
+        spectra,h,error=class_cosmology(float(lr))
+        if spectra is None:
+            print("REJECTED")
+            selection.append((lr,np.nan))
+            epoch_rows.append({"lambda_ratio":lr,"z":"","h":h,"score":"","status":"class_rejected","error":error})
+            continue
+        print("OK")
+        scores=[]
+        for z in redshifts:
+            s=score_epoch(spectra[float(z)],float(z),float(lr))
+            scores.append(s)
+            epoch_rows.append({"lambda_ratio":lr,"z":z,"h":h,"score":s,"status":"ok","error":""})
+        selection.append((lr,float(np.mean(scores))))
 
-    # Save CLASS raw-status table
-    with (OUTDIR / "v010_class_status.csv").open("w", newline="", encoding="utf-8") as f:
-        fields = ["z", "zeta", "status", "sigma8_z0_CLASS", "error"]
-        w = csv.DictWriter(f, fieldnames=fields)
-        w.writeheader(); w.writerows(raw_rows)
+    with (OUTDIR/"v011_lambda_epoch_scores.csv").open("w",newline="",encoding="utf-8") as f:
+        fields=["lambda_ratio","z","h","score","status","error"]
+        w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(epoch_rows)
 
-    variant_rows = []
-    summary_rows = []
+    valid=np.array([(x,s) for x,s in selection if np.isfinite(s)],float)
+    x=valid[:,0]; S=valid[:,1]
+    order=np.argsort(x); x=x[order]; S=S[order]
+    Srel=S/np.max(S)
 
-    for z in redshifts:
-        for as_scale in AS_SCALES:
-            for hmf_model in HMF_MODELS:
-                for cool_scale in COOLING_SCALES:
-                    for T_min in T_MINS:
-                        zs, scores = [], []
-                        obs_score = np.nan
-                        for zeta in zeta_grid:
-                            key = (float(z), float(zeta))
-                            if key not in cache:
-                                continue
-                            sig_base = cache[key][0]
-                            s = score_variant(sig_base, float(zeta), z, as_scale, hmf_model, cool_scale, T_min)
-                            zs.append(float(zeta)); scores.append(float(s))
-                            if np.isclose(zeta, zeta_obs, rtol=1e-10):
-                                obs_score = float(s)
-                            variant_rows.append({
-                                "z":z, "zeta":float(zeta), "as_scale":as_scale,
-                                "hmf":hmf_model, "cooling_scale":cool_scale, "T_min":T_min,
-                                "score":float(s)
-                            })
-                        if not scores:
-                            continue
-                        peak_zeta, peak_score = interpolate_peak(zs, scores)
-                        obs_over_peak = obs_score/peak_score if np.isfinite(obs_score) and peak_score > 0 else np.nan
-                        summary_rows.append({
-                            "z":z, "as_scale":as_scale, "hmf":hmf_model,
-                            "cooling_scale":cool_scale, "T_min":T_min,
-                            "peak_zeta":peak_zeta, "observed_over_peak":obs_over_peak,
-                            "n_valid_zeta":len(scores)
-                        })
+    prior_flat=np.ones_like(x)
+    prior_log=1/x
+    post_flat=S*prior_flat
+    post_log=S*prior_log
 
-    with (OUTDIR / "v010_variant_scores.csv").open("w", newline="", encoding="utf-8") as f:
-        fields = ["z","zeta","as_scale","hmf","cooling_scale","T_min","score"]
-        w = csv.DictWriter(f, fieldnames=fields); w.writeheader(); w.writerows(variant_rows)
+    stats={
+        "raw_score_peak_lambda":float(x[np.argmax(S)]),
+        "raw_score_at_observed_over_peak":float(np.interp(1.0,x,Srel)),
+        "flat_prior_CDF_at_observed":cdf_at_one(x,post_flat),
+        "flat_prior_median_lambda":weighted_quantile(x,post_flat,0.5),
+        "flat_prior_16":weighted_quantile(x,post_flat,0.16),
+        "flat_prior_84":weighted_quantile(x,post_flat,0.84),
+        "log_prior_CDF_at_observed":cdf_at_one(x,post_log),
+        "log_prior_median_lambda":weighted_quantile(x,post_log,0.5),
+        "log_prior_16":weighted_quantile(x,post_log,0.16),
+        "log_prior_84":weighted_quantile(x,post_log,0.84),
+    }
 
-    with (OUTDIR / "v010_sensitivity_summary.csv").open("w", newline="", encoding="utf-8") as f:
-        fields = ["z","as_scale","hmf","cooling_scale","T_min","peak_zeta","observed_over_peak","n_valid_zeta"]
-        w = csv.DictWriter(f, fieldnames=fields); w.writeheader(); w.writerows(summary_rows)
+    with (OUTDIR/"v011_lambda_selection.csv").open("w",newline="",encoding="utf-8") as f:
+        fields=["lambda_ratio","selection_score","selection_relative","posterior_flat_unnorm","posterior_logflat_unnorm"]
+        w=csv.DictWriter(f,fieldnames=fields); w.writeheader()
+        for i in range(len(x)):
+            w.writerow({"lambda_ratio":x[i],"selection_score":S[i],"selection_relative":Srel[i],"posterior_flat_unnorm":post_flat[i],"posterior_logflat_unnorm":post_log[i]})
 
-    # Global robustness summary
-    peaks = np.array([r["peak_zeta"] for r in summary_rows], float)
-    ratios = np.array([r["observed_over_peak"] for r in summary_rows], float)
-    finite = np.isfinite(peaks) & np.isfinite(ratios)
-    peaks = peaks[finite]; ratios = ratios[finite]
+    lines=[
+        f"CANEVAS + CLASS v{VERSION} — DARK ENERGY / MEASURE SUMMARY",
+        "="*64,
+        f"Fixed zeta = {zeta_obs:.6f}",
+        "",
+        "PHYSICS ONLY S(Lambda):",
+        f"raw score peak Lambda/Lambda_obs = {stats['raw_score_peak_lambda']:.6f}",
+        f"score at observed Lambda / peak = {stats['raw_score_at_observed_over_peak']:.6f}",
+        "",
+        "FLAT PRIOR PER UNIT POSITIVE LAMBDA:",
+        f"CDF at observed Lambda = {stats['flat_prior_CDF_at_observed']:.6f}",
+        f"median = {stats['flat_prior_median_lambda']:.6f}",
+        f"16-84% = [{stats['flat_prior_16']:.6f}, {stats['flat_prior_84']:.6f}]",
+        "",
+        "LOG-FLAT PRIOR:",
+        f"CDF at observed Lambda = {stats['log_prior_CDF_at_observed']:.6f}",
+        f"median = {stats['log_prior_median_lambda']:.6f}",
+        f"16-84% = [{stats['log_prior_16']:.6f}, {stats['log_prior_84']:.6f}]",
+        "",
+        "PRE-DECLARED INTERPRETATION:",
+        "- If physics alone peaks at the lower scan boundary, non-zero Lambda is NOT explained by optimization.",
+        "- If observer-conditioned typicality changes strongly with the prior, the Canevas measure P(U) is essential.",
+        "- No prior is promoted to correct because it matches observation.",
+    ]
+    (OUTDIR/"v011_lambda_measure_summary.txt").write_text("\n".join(lines),encoding="utf-8")
 
-    # Epoch-specific stats
-    lines = []
-    lines.append(f"CANEVAS + CLASS v{VERSION} — ROBUSTNESS SUMMARY")
-    lines.append("=" * 56)
-    lines.append(f"Observed zeta = {zeta_obs:.6f}")
-    lines.append(f"Total model variants = {len(summary_rows)}")
-    lines.append("")
-    for z in redshifts:
-        rr = [r for r in summary_rows if r["z"] == z and np.isfinite(r["peak_zeta"])]
-        pp = np.array([r["peak_zeta"] for r in rr])
-        oo = np.array([r["observed_over_peak"] for r in rr])
-        lines.append(
-            f"z={z:4.1f}: peak median={np.median(pp):.4f}; "
-            f"16-84%=[{np.percentile(pp,16):.4f},{np.percentile(pp,84):.4f}]; "
-            f"obs/max median={np.nanmedian(oo):.4f}"
-        )
-    lines.append("")
-    lines.append(f"ALL VARIANTS peak median = {np.median(peaks):.4f}")
-    lines.append(f"ALL VARIANTS peak 5-95% = [{np.percentile(peaks,5):.4f}, {np.percentile(peaks,95):.4f}]")
-    lines.append(f"Fraction of variants with 3 <= peak_zeta <= 10 = {np.mean((peaks>=3)&(peaks<=10)):.4f}")
-    lines.append(f"Fraction with observed_over_peak >= 0.90 = {np.mean(ratios>=0.90):.4f}")
-    lines.append(f"Fraction with observed_over_peak >= 0.75 = {np.mean(ratios>=0.75):.4f}")
-    lines.append("")
-    lines.append("Interpretation rule (pre-declared):")
-    lines.append("- robust-interesting if most variants keep peak zeta in the same order of magnitude;")
-    lines.append("- weak/non-robust if reasonable variants scatter the peak across the scan range;")
-    lines.append("- never interpret proximity alone as proof of Canevas.")
-
-    summary_text = "\n".join(lines)
-    (OUTDIR / "v010_robustness_summary.txt").write_text(summary_text, encoding="utf-8")
-    print("\n" + summary_text)
-    print("\nFINISHED. Results are in:", OUTDIR)
+    print("\n"+"\n".join(lines))
+    print("\nFINISHED v0.11")
 
 
-if __name__ == "__main__":
+if __name__=="__main__":
     try:
         run()
     except Exception:
         traceback.print_exc()
-        input("\nUnexpected pipeline error. Press Enter to close...")
+        input("\nUnexpected error. Press Enter to close...")
