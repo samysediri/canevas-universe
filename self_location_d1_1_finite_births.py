@@ -1,12 +1,12 @@
 """SELF-LOCATION D1.1 — source-corrected finite human birth-distribution test.
 
 D1 failed before producing a result because the OWID series ended in 2023.
-D1.1 is a technical source correction. This revision only fixes UNData CSV
-transport decoding (UNData may return UTF-16 rather than UTF-8); no scientific
-threshold, tail scenario, observed rank, or verdict rule is changed.
+D1.1 is a technical source correction. This revision only fixes UNData transport:
+DownloadHandler returns a ZIP archive containing a CSV. No scientific threshold,
+tail scenario, observed rank, or verdict rule is changed.
 """
 from __future__ import annotations
-import io, math, urllib.request
+import io, math, urllib.request, zipfile
 import pandas as pd
 
 BIRTH_YEAR=1992
@@ -17,15 +17,22 @@ UNDATA_CBR="https://data.un.org/Handlers/DownloadHandler.ashx?DataFilter=variabl
 UNDATA_POP="https://data.un.org/Handlers/DownloadHandler.ashx?DataFilter=variableID:12;crID:900&DataMartId=PopDiv&Format=csv"
 TAILS=[('EXTINCTION_2100','zero',None),('EXP_DECAY_5PCT','exp',.05),('EXP_DECAY_2PCT','exp',.02),('EXP_DECAY_1PCT','exp',.01),('EXP_DECAY_0P5PCT','exp',.005),('EXP_DECAY_0P25PCT','exp',.0025),('PLATEAU_1000Y','plateau',1000),('PLATEAU_10000Y','plateau',10000),('INDEFINITE_PLATEAU','infinite',None)]
 
+def _decode_csv_bytes(raw):
+ if raw.startswith((b'\xff\xfe',b'\xfe\xff')) or raw[:100].count(b'\x00')>10:
+  return raw.decode('utf-16')
+ try:return raw.decode('utf-8-sig')
+ except UnicodeDecodeError:return raw.decode('latin-1')
+
 def read_csv_url(url):
  req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0'})
  raw=urllib.request.urlopen(req,timeout=60).read()
- # UNData commonly serves UTF-16 CSV; OWID is UTF-8. Decode transport only.
- if raw.startswith((b'\xff\xfe',b'\xfe\xff')) or raw[:100].count(b'\x00')>10:
-  text=raw.decode('utf-16')
- else:
-  try:text=raw.decode('utf-8-sig')
-  except UnicodeDecodeError:text=raw.decode('latin-1')
+ # UNData DownloadHandler serves a ZIP archive even when Format=csv.
+ if raw.startswith(b'PK'):
+  with zipfile.ZipFile(io.BytesIO(raw)) as z:
+   names=[n for n in z.namelist() if not n.endswith('/')]
+   if not names: raise RuntimeError('UNData ZIP archive contained no file')
+   raw=z.read(names[0])
+ text=_decode_csv_bytes(raw)
  return pd.read_csv(io.StringIO(text))
 
 def historical():
